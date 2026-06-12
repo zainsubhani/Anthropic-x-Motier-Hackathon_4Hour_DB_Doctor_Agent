@@ -28,7 +28,7 @@ function runExplain(): string {
   const db = getDb();
   const plan = db
     .prepare(`EXPLAIN QUERY PLAN ${SLOW_QUERY}`)
-    .all() as Array<{ detail: string }>;
+    .all(42) as Array<{ detail: string }>;
   return plan.map((r) => r.detail).join('\n');
 }
 
