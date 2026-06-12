@@ -1,6 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
+
+/* ── Types ────────────────────────────────────────────────────────── */
 
 interface AgentStep {
   label: string;
@@ -28,15 +30,11 @@ interface FixResult {
   explain_after: string;
 }
 
-const EXAMPLE_QUESTIONS = [
-  "Why is fetching orders for a customer so slow?",
-  "Our customer order lookup is timing out. What's wrong?",
-  "The orders query is taking forever. How do I fix it?",
-];
+/* ── Export ───────────────────────────────────────────────────────── */
 
-function exportReport(question: string, diagnose: DiagnoseResult, fixResult: FixResult | null): void {
+function exportReport(question: string, diagnose: DiagnoseResult, fixResult: FixResult | null) {
   const ts = new Date().toISOString();
-  const lines: string[] = [
+  const lines = [
     '# DB Doctor — Outcome Report',
     `**Generated:** ${ts}`,
     `**Question:** ${question}`,
@@ -50,88 +48,154 @@ function exportReport(question: string, diagnose: DiagnoseResult, fixResult: Fix
     diagnose.diagnosis,
     '',
     '## EXPLAIN QUERY PLAN (before)',
-    '```',
-    diagnose.explain_plan,
-    '```',
+    '```', diagnose.explain_plan, '```',
     '',
     `**Query time before fix:** ${diagnose.query_time_ms.toFixed(2)}ms`,
     '',
     '## Recommended Fix',
-    '```sql',
-    diagnose.fix_sql,
-    '```',
+    '```sql', diagnose.fix_sql, '```',
     '',
     diagnose.explanation,
-    '',
     `**Expected improvement:** ${diagnose.expected_improvement}`,
   ];
-
   if (fixResult) {
-    lines.push(
-      '',
-      '## Outcome',
-      `| Metric | Value |`,
-      `|--------|-------|`,
-      `| Before | ${fixResult.before_ms.toFixed(2)}ms (full table scan) |`,
-      `| After  | ${fixResult.after_ms.toFixed(2)}ms (indexed lookup) |`,
+    lines.push('', '## Outcome',
+      '| Metric | Value |', '|--------|-------|',
+      `| Before | ${fixResult.before_ms.toFixed(2)}ms |`,
+      `| After  | ${fixResult.after_ms.toFixed(2)}ms |`,
       `| Speedup | **${fixResult.speedup}x faster** |`,
-      '',
-      '**EXPLAIN QUERY PLAN (after)**',
-      '```',
-      fixResult.explain_after,
-      '```',
-    );
+      '', '**EXPLAIN QUERY PLAN (after)**', '```', fixResult.explain_after, '```');
   }
-
   lines.push('', '---', '*Powered by Claude (claude-opus-4-8) · DB Doctor*');
-
   const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = `db-doctor-report-${Date.now()}.md`;
-  a.click();
+  a.href = url; a.download = `db-doctor-report-${Date.now()}.md`; a.click();
   URL.revokeObjectURL(url);
 }
 
-function ApproveModal({
-  sql,
-  onApprove,
-  onDeny,
-}: {
-  sql: string;
-  onApprove: () => void;
-  onDeny: () => void;
+/* ── Animated counter ─────────────────────────────────────────────── */
+
+function AnimatedNumber({ value }: { value: string }) {
+  const [display, setDisplay] = useState('0');
+  const target = parseFloat(value);
+
+  useEffect(() => {
+    if (isNaN(target)) { setDisplay(value); return; }
+    const duration = 1000;
+    const steps = 40;
+    const increment = target / steps;
+    let current = 0;
+    let step = 0;
+    const timer = setInterval(() => {
+      step++;
+      current = Math.min(current + increment, target);
+      setDisplay(current.toFixed(1));
+      if (step >= steps) { setDisplay(value); clearInterval(timer); }
+    }, duration / steps);
+    return () => clearInterval(timer);
+  }, [value, target]);
+
+  return <span>{display}</span>;
+}
+
+/* ── Thinking indicator ───────────────────────────────────────────── */
+
+const THINKING_STEPS = [
+  'Inspecting schema…',
+  'Running EXPLAIN QUERY PLAN…',
+  'Timing query execution…',
+  'Calling Claude…',
+  'Forming diagnosis…',
+];
+
+function ThinkingIndicator() {
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setStep(s => Math.min(s + 1, THINKING_STEPS.length - 1)), 1800);
+    return () => clearInterval(t);
+  }, []);
+
+  return (
+    <div className="animate-fade-in flex flex-col items-center gap-6 py-10">
+      {/* Orbiting ring */}
+      <div className="relative w-14 h-14">
+        <div className="absolute inset-0 rounded-full border-2 border-[#2a2a2a]" />
+        <div
+          className="absolute inset-0 rounded-full border-2 border-transparent border-t-[#c96442]"
+          style={{ animation: 'spin-slow 1s linear infinite' }}
+        />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-2.5 h-2.5 rounded-full bg-[#c96442] opacity-80" />
+        </div>
+      </div>
+
+      {/* Step label */}
+      <div className="text-center">
+        <p key={step} className="animate-fade-in-down text-[#f0ede8] text-sm font-medium">
+          {THINKING_STEPS[step]}
+        </p>
+        <div className="flex items-center justify-center gap-1.5 mt-3">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#c96442] dot-1" />
+          <span className="w-1.5 h-1.5 rounded-full bg-[#c96442] dot-2" />
+          <span className="w-1.5 h-1.5 rounded-full bg-[#c96442] dot-3" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Permission modal ─────────────────────────────────────────────── */
+
+function ApproveModal({ sql, onApprove, onDeny }: {
+  sql: string; onApprove: () => void; onDeny: () => void;
 }) {
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-900 border border-yellow-700 rounded-xl max-w-lg w-full p-6 shadow-2xl">
-        <div className="flex items-center gap-2 mb-4">
-          <span className="text-yellow-400 text-xl">🔐</span>
-          <h2 className="text-white font-bold text-lg">Permission Required</h2>
-          <span className="ml-auto text-xs bg-yellow-900/60 text-yellow-300 px-2 py-0.5 rounded font-mono">always_ask</span>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ backdropFilter: 'blur(8px)', backgroundColor: 'rgba(0,0,0,0.7)' }}>
+      <div className="animate-scale-in w-full max-w-lg rounded-2xl border border-[#2e2e2e] bg-[#141414] p-6 shadow-2xl">
+        {/* Header */}
+        <div className="flex items-start gap-3 mb-5">
+          <div className="mt-0.5 w-8 h-8 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center shrink-0">
+            <svg className="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+            </svg>
+          </div>
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <h3 className="text-white font-semibold">Permission required</h3>
+              <span className="text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 rounded">
+                always_ask
+              </span>
+            </div>
+            <p className="text-[#888] text-sm">
+              Claude wants to execute the following statement against your database.
+            </p>
+          </div>
         </div>
-        <p className="text-gray-400 text-sm mb-3">
-          Claude wants to execute the following statement against your database:
+
+        {/* SQL preview */}
+        <div className="rounded-xl border border-[#2a2a2a] bg-[#0d0d0d] p-4 mb-5">
+          <div className="flex items-center gap-2 mb-2.5">
+            <div className="w-2 h-2 rounded-full bg-[#c96442]" />
+            <span className="text-[11px] text-[#555] font-mono uppercase tracking-wider">SQL to execute</span>
+          </div>
+          <pre className="text-emerald-400 text-sm font-mono leading-relaxed whitespace-pre-wrap break-all">{sql}</pre>
+        </div>
+
+        <p className="text-[#555] text-xs mb-5 leading-relaxed">
+          This creates a B-tree index on <span className="text-[#888] font-mono">orders.customer_id</span>. Non-destructive — can be rolled back with <span className="text-[#888] font-mono">DROP INDEX</span>.
         </p>
-        <pre className="bg-gray-800 text-green-300 text-sm font-mono p-3 rounded overflow-x-auto mb-5">
-          {sql}
-        </pre>
-        <p className="text-gray-500 text-xs mb-5">
-          This will create a new index on <span className="text-gray-300 font-mono">orders.customer_id</span>. The operation is non-destructive and can be rolled back by dropping the index.
-        </p>
+
         <div className="flex gap-3 justify-end">
-          <button
-            onClick={onDeny}
-            className="px-4 py-2 rounded-lg border border-gray-600 text-gray-300 hover:bg-gray-800 transition-colors text-sm"
-          >
+          <button onClick={onDeny}
+            className="px-4 py-2 rounded-xl border border-[#2a2a2a] text-[#888] hover:text-white hover:border-[#3a3a3a] transition-all text-sm">
             Deny
           </button>
-          <button
-            onClick={onApprove}
-            className="px-5 py-2 rounded-lg bg-green-600 hover:bg-green-500 text-white font-semibold transition-colors text-sm"
-          >
-            Approve
+          <button onClick={onApprove}
+            className="px-5 py-2 rounded-xl bg-[#c96442] hover:bg-[#b8573a] text-white font-medium transition-all text-sm shadow-lg shadow-[#c96442]/20">
+            Approve & run
           </button>
         </div>
       </div>
@@ -139,38 +203,61 @@ function ApproveModal({
   );
 }
 
+/* ── Agent trace ──────────────────────────────────────────────────── */
+
 function AgentTrace({ steps }: { steps: AgentStep[] }) {
   const [open, setOpen] = useState(false);
+
   return (
-    <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
-      <button
-        onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between px-5 py-3 text-sm font-semibold text-gray-300 hover:bg-gray-750 transition-colors"
-      >
-        <span className="flex items-center gap-2">
-          <span className="text-blue-400">◈</span>
-          Agent steps
-          <span className="text-xs font-normal text-gray-500">({steps.length} steps)</span>
-        </span>
-        <span className="text-gray-500 text-xs">{open ? '▲ collapse' : '▼ expand'}</span>
+    <div className="animate-fade-in-up rounded-2xl border border-[#1e1e1e] bg-[#111] overflow-hidden">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-[#161616] transition-colors group">
+        <div className="flex items-center gap-3">
+          <div className="w-5 h-5 rounded-full bg-[#c96442]/10 border border-[#c96442]/20 flex items-center justify-center">
+            <div className="w-1.5 h-1.5 rounded-full bg-[#c96442]" />
+          </div>
+          <span className="text-sm font-medium text-[#d0cdc8]">Agent investigation trail</span>
+          <span className="text-xs text-[#444] bg-[#1a1a1a] border border-[#222] px-2 py-0.5 rounded-full">
+            {steps.length} steps
+          </span>
+          {steps.some(s => s.status === 'warn') && (
+            <span className="text-xs text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2 py-0.5 rounded-full">
+              issues found
+            </span>
+          )}
+        </div>
+        <svg
+          className={`w-4 h-4 text-[#444] transition-transform duration-300 ${open ? 'rotate-180' : ''}`}
+          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+        </svg>
       </button>
+
       {open && (
-        <div className="px-5 pb-4 space-y-3 border-t border-gray-700 pt-4">
+        <div className="border-t border-[#1e1e1e] px-5 pt-4 pb-5 stagger-children">
           {steps.map((step, i) => (
-            <div key={i} className="flex gap-3">
-              <div className="flex flex-col items-center">
-                <div className={`w-5 h-5 rounded-full flex items-center justify-center text-xs shrink-0 mt-0.5 ${step.status === 'warn' ? 'bg-yellow-900/60 text-yellow-300' : 'bg-blue-900/60 text-blue-300'}`}>
+            <div key={i} className="animate-fade-in-up flex gap-4 mb-4 last:mb-0">
+              {/* Line + dot */}
+              <div className="flex flex-col items-center pt-1">
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-mono shrink-0 border
+                  ${step.status === 'warn'
+                    ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                    : 'bg-[#c96442]/10 border-[#c96442]/20 text-[#c96442]'}`}>
                   {i + 1}
                 </div>
-                {i < steps.length - 1 && <div className="w-px flex-1 bg-gray-700 mt-1" />}
+                {i < steps.length - 1 && (
+                  <div className="w-px flex-1 mt-2 bg-linear-to-b from-[#2a2a2a] to-transparent" />
+                )}
               </div>
-              <div className="pb-3 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-white text-sm font-medium">{step.label}</span>
-                  {step.status === 'warn' && <span className="text-xs text-yellow-400">⚠ issue detected</span>}
-                  {step.status === 'ok' && <span className="text-xs text-blue-400">✓</span>}
+              {/* Content */}
+              <div className="flex-1 pb-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-sm text-[#f0ede8] font-medium">{step.label}</span>
+                  {step.status === 'warn'
+                    ? <span className="text-xs text-amber-400">⚠ detected</span>
+                    : <span className="text-xs text-[#c96442]">✓</span>}
                 </div>
-                <pre className="text-gray-400 text-xs font-mono whitespace-pre-wrap break-all leading-relaxed">
+                <pre className="text-xs text-[#666] font-mono leading-relaxed whitespace-pre-wrap wrap-break-word">
                   {step.detail}
                 </pre>
               </div>
@@ -182,6 +269,14 @@ function AgentTrace({ steps }: { steps: AgentStep[] }) {
   );
 }
 
+/* ── Main page ────────────────────────────────────────────────────── */
+
+const EXAMPLES = [
+  "Why is fetching orders for a customer so slow?",
+  "Customer order lookups are timing out — what's wrong?",
+  "The orders query takes forever. How do I fix it?",
+];
+
 export default function Home() {
   const [question, setQuestion] = useState('');
   const [loading, setLoading] = useState(false);
@@ -191,18 +286,13 @@ export default function Home() {
   const [error, setError] = useState('');
   const [showApproval, setShowApproval] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const resultsRef = useRef<HTMLDivElement>(null);
 
-  async function handleReset() {
-    setResetting(true);
-    setDiagnose(null);
-    setFixResult(null);
-    setError('');
-    try {
-      await fetch('/api/reset', { method: 'POST' });
-    } finally {
-      setResetting(false);
+  useEffect(() => {
+    if (diagnose && !loading) {
+      setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
     }
-  }
+  }, [diagnose, loading]);
 
   async function handleDiagnose(e: React.FormEvent) {
     e.preventDefault();
@@ -213,8 +303,7 @@ export default function Home() {
     setError('');
     try {
       const res = await fetch('/api/diagnose', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question }),
       });
       const data = await res.json();
@@ -229,12 +318,10 @@ export default function Home() {
 
   async function executeApplyFix() {
     if (!diagnose) return;
-    setFixing(true);
-    setError('');
+    setFixing(true); setError('');
     try {
       const res = await fetch('/api/apply-fix', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fix_sql: diagnose.fix_sql, before_ms: diagnose.query_time_ms }),
       });
       const data = await res.json();
@@ -247,13 +334,11 @@ export default function Home() {
     }
   }
 
-  function handleApprove() {
-    setShowApproval(false);
-    executeApplyFix();
-  }
-
-  function handleDeny() {
-    setShowApproval(false);
+  async function handleReset() {
+    setResetting(true);
+    setDiagnose(null); setFixResult(null); setError('');
+    try { await fetch('/api/reset', { method: 'POST' }); }
+    finally { setResetting(false); }
   }
 
   return (
@@ -261,192 +346,270 @@ export default function Home() {
       {showApproval && diagnose && (
         <ApproveModal
           sql={diagnose.fix_sql}
-          onApprove={handleApprove}
-          onDeny={handleDeny}
+          onApprove={() => { setShowApproval(false); executeApplyFix(); }}
+          onDeny={() => setShowApproval(false)}
         />
       )}
 
-      <main className="min-h-screen bg-gray-950 text-gray-100 p-6">
-        <div className="max-w-3xl mx-auto">
-          {/* Header */}
-          <div className="mb-8 text-center relative">
-            <h1 className="text-4xl font-bold text-white mb-2">
-              <span className="text-red-400">DB</span> Doctor
-            </h1>
-            <p className="text-gray-400 text-lg">AI-powered database performance diagnostics</p>
-            <button
-              onClick={handleReset}
-              disabled={resetting}
-              className="absolute right-0 top-1 text-xs text-gray-600 hover:text-gray-400 bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded transition-colors disabled:opacity-50"
-            >
-              {resetting ? 'Resetting...' : 'Reset demo'}
+      <main className="min-h-screen bg-[#0d0d0d] text-[#f0ede8]">
+        {/* Top bar */}
+        <header className="sticky top-0 z-40 border-b border-[#1a1a1a] bg-[#0d0d0d]/90"
+          style={{ backdropFilter: 'blur(12px)' }}>
+          <div className="max-w-2xl mx-auto px-4 h-14 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-[#c96442]/10 border border-[#c96442]/20 flex items-center justify-center">
+                <span className="text-[#c96442] text-xs font-bold">DB</span>
+              </div>
+              <span className="font-semibold text-sm text-[#f0ede8]">DB Doctor</span>
+              <span className="hidden sm:block text-xs text-[#444] border border-[#1e1e1e] px-2 py-0.5 rounded-full">
+                claude-opus-4-8
+              </span>
+            </div>
+            <button onClick={handleReset} disabled={resetting}
+              className="text-xs text-[#555] hover:text-[#888] transition-colors disabled:opacity-40 flex items-center gap-1.5">
+              <svg className={`w-3 h-3 ${resetting ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              {resetting ? 'Resetting…' : 'Reset demo'}
             </button>
           </div>
+        </header>
 
-          {/* Question input */}
-          <form onSubmit={handleDiagnose} className="mb-6">
-            <div className="flex gap-3">
-              <input
-                type="text"
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                placeholder="Why are my customer order queries so slow?"
-                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-              />
-              <button
-                type="submit"
-                disabled={loading || !question.trim()}
-                className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-semibold px-6 py-3 rounded-lg transition-colors"
-              >
-                {loading ? 'Diagnosing...' : 'Diagnose'}
-              </button>
+        <div className="max-w-2xl mx-auto px-4 pb-24">
+
+          {/* Hero */}
+          {!diagnose && !loading && (
+            <div className="animate-fade-in pt-20 pb-12 text-center">
+              <div className="inline-flex items-center gap-2 text-xs text-[#555] border border-[#1e1e1e] px-3 py-1.5 rounded-full mb-6">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                AI database diagnostics
+              </div>
+              <h1 className="text-4xl sm:text-5xl font-bold tracking-tight mb-4 leading-tight">
+                What's slowing down{' '}
+                <span className="text-shimmer">your database?</span>
+              </h1>
+              <p className="text-[#666] text-lg max-w-md mx-auto leading-relaxed">
+                Describe the problem in plain English. The agent investigates, diagnoses, and fixes it.
+              </p>
             </div>
-            <div className="flex gap-2 mt-2 flex-wrap">
-              {EXAMPLE_QUESTIONS.map((q) => (
-                <button
-                  key={q}
-                  type="button"
-                  onClick={() => setQuestion(q)}
-                  className="text-xs text-gray-500 hover:text-gray-300 bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded transition-colors"
-                >
-                  {q}
+          )}
+
+          {/* Compact heading when results are showing */}
+          {(diagnose || loading) && (
+            <div className="animate-fade-in-down pt-8 pb-6">
+              <h2 className="text-xl font-semibold text-[#f0ede8]">
+                {loading ? 'Investigating…' : 'Diagnosis complete'}
+              </h2>
+              {diagnose && !loading && (
+                <p className="text-sm text-[#555] mt-1">{question}</p>
+              )}
+            </div>
+          )}
+
+          {/* Input */}
+          <form onSubmit={handleDiagnose} className={`${diagnose || loading ? 'mb-8' : 'mb-6'}`}>
+            <div className="input-glow rounded-2xl border border-[#1e1e1e] bg-[#111] transition-all duration-300">
+              <div className="flex items-end gap-3 p-3">
+                <textarea
+                  rows={2}
+                  value={question}
+                  onChange={e => setQuestion(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (question.trim() && !loading) handleDiagnose(e as unknown as React.FormEvent); } }}
+                  placeholder="Why are my customer order queries so slow?"
+                  className="flex-1 bg-transparent resize-none text-[#f0ede8] placeholder-[#444] text-sm leading-relaxed focus:outline-none py-1 px-1"
+                />
+                <button type="submit" disabled={loading || !question.trim()}
+                  className="shrink-0 w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-200
+                    disabled:bg-[#1a1a1a] disabled:text-[#333]
+                    bg-[#c96442] hover:bg-[#b8573a] text-white shadow-lg shadow-[#c96442]/20">
+                  {loading
+                    ? <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                      </svg>
+                    : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.269 20.876L5.999 12zm0 0h7.5" />
+                      </svg>
+                  }
                 </button>
-              ))}
+              </div>
             </div>
+
+            {/* Example chips */}
+            {!diagnose && !loading && (
+              <div className="animate-fade-in flex flex-wrap gap-2 mt-3">
+                {EXAMPLES.map(q => (
+                  <button key={q} type="button" onClick={() => setQuestion(q)}
+                    className="text-xs text-[#555] hover:text-[#999] border border-[#1e1e1e] hover:border-[#2a2a2a] bg-[#111] hover:bg-[#161616] px-3 py-1.5 rounded-full transition-all">
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
           </form>
 
           {/* Error */}
           {error && (
-            <div className="bg-red-900/30 border border-red-700 text-red-300 rounded-lg p-4 mb-6">
-              {error}
+            <div className="animate-fade-in-up mb-6 rounded-2xl border border-red-900/40 bg-red-950/20 p-4 flex gap-3">
+              <svg className="w-4 h-4 text-red-400 mt-0.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-red-300 text-sm">{error}</p>
             </div>
           )}
 
-          {/* Loading */}
-          {loading && (
-            <div className="bg-gray-800 rounded-lg p-6 text-center">
-              <div className="text-blue-400 text-lg">Agent investigating...</div>
-              <div className="text-gray-500 text-sm mt-2">Inspecting schema · Running EXPLAIN · Calling Claude</div>
-            </div>
-          )}
+          {/* Thinking state */}
+          {loading && <ThinkingIndicator />}
 
-          {/* Diagnosis result */}
+          {/* Results */}
           {diagnose && !loading && (
-            <div className="space-y-4">
+            <div ref={resultsRef} className="space-y-4">
 
-              {/* Agent trace — Feature #1 */}
+              {/* Agent trace */}
               <AgentTrace steps={diagnose.steps} />
 
-              {/* Diagnosis card */}
-              <div className="bg-gray-800 rounded-lg p-5 border border-gray-700">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-lg font-semibold text-white">Diagnosis</h2>
-                  <span className="text-xs bg-red-900/60 text-red-300 px-2 py-1 rounded font-mono">
-                    {diagnose.query_time_ms.toFixed(1)}ms
-                  </span>
+              {/* Diagnosis */}
+              <div className="animate-fade-in-up delay-100 rounded-2xl border border-[#1e1e1e] bg-[#111] p-5">
+                <div className="flex items-start justify-between gap-4 mb-4">
+                  <h3 className="font-semibold text-[#f0ede8]">Diagnosis</h3>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <div className="w-2 h-2 rounded-full bg-red-500" />
+                    <span className="text-xs font-mono text-red-400">{diagnose.query_time_ms.toFixed(1)}ms</span>
+                  </div>
                 </div>
-                <p className="text-gray-300 mb-3">{diagnose.diagnosis}</p>
-                <div className="bg-gray-900 rounded p-3 text-sm">
-                  <div className="text-gray-500 text-xs mb-1">Root Cause</div>
-                  <div className="text-orange-300">{diagnose.root_cause}</div>
+                <p className="text-[#bbb] text-sm leading-relaxed mb-4">{diagnose.diagnosis}</p>
+                <div className="rounded-xl bg-[#0d0d0d] border border-[#1a1a1a] p-3.5">
+                  <p className="text-[10px] text-[#444] font-mono uppercase tracking-wider mb-1.5">Root cause</p>
+                  <p className="text-amber-300 text-sm">{diagnose.root_cause}</p>
                 </div>
               </div>
 
-              {/* Query plan */}
-              <div className="bg-gray-800 rounded-lg p-5 border border-gray-700">
-                <h3 className="text-sm font-semibold text-gray-400 mb-2">EXPLAIN QUERY PLAN</h3>
-                <pre className="text-red-300 text-sm font-mono bg-gray-900 p-3 rounded overflow-x-auto">
+              {/* EXPLAIN output */}
+              <div className="animate-fade-in-up delay-200 rounded-2xl border border-[#1e1e1e] bg-[#111] p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-[10px] font-mono text-[#444] uppercase tracking-wider">EXPLAIN QUERY PLAN</span>
+                  <div className="h-px flex-1 bg-[#1a1a1a]" />
+                  <span className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full">
+                    full scan
+                  </span>
+                </div>
+                <pre className="text-sm font-mono leading-relaxed text-red-300 bg-[#0d0d0d] border border-[#1a1a1a] rounded-xl p-3.5 overflow-x-auto">
                   {diagnose.explain_plan}
                 </pre>
               </div>
 
-              {/* Fix — with permission gate (Feature #3) */}
-              <div className="bg-gray-800 rounded-lg p-5 border border-blue-800">
-                <h2 className="text-lg font-semibold text-white mb-3">Recommended Fix</h2>
-                <p className="text-gray-300 text-sm mb-3">{diagnose.explanation}</p>
-                <pre className="bg-gray-900 text-green-300 text-sm font-mono p-3 rounded overflow-x-auto mb-4">
-                  {diagnose.fix_sql}
-                </pre>
+              {/* Recommended fix */}
+              <div className="animate-fade-in-up delay-300 rounded-2xl border border-[#c96442]/20 bg-[#111] p-5">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-1.5 h-1.5 rounded-full bg-[#c96442]" />
+                  <h3 className="font-semibold text-[#f0ede8]">Recommended fix</h3>
+                </div>
+                <p className="text-[#888] text-sm leading-relaxed mb-4 ml-3.5">{diagnose.explanation}</p>
+                <div className="rounded-xl bg-[#0d0d0d] border border-[#1a1a1a] p-3.5 mb-4">
+                  <pre className="text-emerald-400 text-sm font-mono leading-relaxed whitespace-pre-wrap overflow-x-auto">
+                    {diagnose.fix_sql}
+                  </pre>
+                </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-500 text-sm">
-                    Expected: <span className="text-green-400 font-semibold">{diagnose.expected_improvement}</span>
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <svg className="w-3.5 h-3.5 text-[#c96442]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                    </svg>
+                    <span className="text-xs text-[#555]">
+                      Expected: <span className="text-[#c96442] font-medium">{diagnose.expected_improvement}</span>
+                    </span>
+                  </div>
                   {!fixResult && (
-                    <button
-                      onClick={() => setShowApproval(true)}
-                      disabled={fixing}
-                      className="bg-green-600 hover:bg-green-500 disabled:bg-gray-700 disabled:cursor-not-allowed text-white font-bold px-6 py-2 rounded-lg transition-colors"
-                    >
-                      {fixing ? 'Applying...' : 'Apply Fix'}
+                    <button onClick={() => setShowApproval(true)} disabled={fixing}
+                      className="animate-glow flex items-center gap-2 px-4 py-2 rounded-xl bg-[#c96442] hover:bg-[#b8573a] disabled:bg-[#1a1a1a] disabled:text-[#444] text-white text-sm font-medium transition-all shadow-lg shadow-[#c96442]/20">
+                      {fixing
+                        ? <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Applying…</>
+                        : <><svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> Apply fix</>
+                      }
                     </button>
                   )}
                 </div>
               </div>
 
-              {/* Before/After results */}
+              {/* Results */}
               {fixResult && (
-                <div className="bg-gray-900 rounded-lg p-6 border border-green-700">
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-xl font-bold text-white">Outcome</h2>
-                    {/* Export button — Feature #2 */}
-                    <button
-                      onClick={() => exportReport(question, diagnose, fixResult)}
-                      className="text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-                    >
-                      <span>↓</span> Export Report
+                <div className="animate-fade-in-up rounded-2xl border border-emerald-900/30 bg-[#0d1a12] p-5">
+                  <div className="flex items-center justify-between mb-5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-5 h-5 rounded-full bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center">
+                        <svg className="w-3 h-3 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      </div>
+                      <h3 className="font-semibold text-[#f0ede8]">Outcome</h3>
+                    </div>
+                    <button onClick={() => exportReport(question, diagnose, fixResult)}
+                      className="flex items-center gap-1.5 text-xs text-[#555] hover:text-[#999] border border-[#1e1e1e] hover:border-[#2a2a2a] bg-[#111] hover:bg-[#161616] px-3 py-1.5 rounded-full transition-all">
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      Export report
                     </button>
                   </div>
-                  <div className="grid grid-cols-3 gap-4 text-center mb-6">
-                    <div className="bg-gray-800 rounded-lg p-4">
-                      <div className="text-gray-400 text-xs mb-1">Before</div>
-                      <div className="text-red-400 text-2xl font-mono font-bold">
-                        {fixResult.before_ms.toFixed(1)}ms
-                      </div>
-                      <div className="text-gray-500 text-xs">full table scan</div>
+
+                  {/* Speedup display */}
+                  <div className="grid grid-cols-3 gap-3 mb-5">
+                    <div className="rounded-xl bg-[#0d0d0d] border border-[#1a1a1a] p-4 text-center">
+                      <p className="text-[10px] text-[#444] uppercase tracking-wider mb-2">Before</p>
+                      <p className="text-2xl font-mono font-bold text-red-400">{fixResult.before_ms.toFixed(1)}<span className="text-sm font-normal text-[#555]">ms</span></p>
+                      <p className="text-[10px] text-[#444] mt-1">full scan</p>
                     </div>
-                    <div className="bg-green-900/40 rounded-lg p-4 border border-green-700 flex flex-col items-center justify-center">
-                      <div className="text-green-400 text-3xl font-black">
-                        {fixResult.speedup}x
-                      </div>
-                      <div className="text-green-500 text-xs">faster</div>
+
+                    <div className="rounded-xl bg-emerald-950/40 border border-emerald-800/30 p-4 text-center flex flex-col items-center justify-center">
+                      <p className="animate-count-up text-4xl font-black text-emerald-400">
+                        <AnimatedNumber value={fixResult.speedup} />
+                        <span className="text-2xl">×</span>
+                      </p>
+                      <p className="text-[10px] text-emerald-600 mt-1 font-medium">faster</p>
                     </div>
-                    <div className="bg-gray-800 rounded-lg p-4">
-                      <div className="text-gray-400 text-xs mb-1">After</div>
-                      <div className="text-green-400 text-2xl font-mono font-bold">
-                        {fixResult.after_ms.toFixed(1)}ms
-                      </div>
-                      <div className="text-gray-500 text-xs">indexed lookup</div>
+
+                    <div className="rounded-xl bg-[#0d0d0d] border border-[#1a1a1a] p-4 text-center">
+                      <p className="text-[10px] text-[#444] uppercase tracking-wider mb-2">After</p>
+                      <p className="text-2xl font-mono font-bold text-emerald-400">{fixResult.after_ms.toFixed(2)}<span className="text-sm font-normal text-[#555]">ms</span></p>
+                      <p className="text-[10px] text-[#444] mt-1">indexed</p>
                     </div>
                   </div>
-                  <div className="bg-gray-800 rounded p-3">
-                    <div className="text-gray-500 text-xs mb-1">New EXPLAIN QUERY PLAN</div>
-                    <pre className="text-green-300 text-sm font-mono overflow-x-auto">
+
+                  {/* New EXPLAIN */}
+                  <div className="rounded-xl bg-[#0a110d] border border-emerald-900/20 p-3.5">
+                    <p className="text-[10px] font-mono text-[#2a5a3a] uppercase tracking-wider mb-2">New EXPLAIN QUERY PLAN</p>
+                    <pre className="text-emerald-400 text-xs font-mono leading-relaxed overflow-x-auto">
                       {fixResult.explain_after}
                     </pre>
                   </div>
                 </div>
               )}
 
-              {/* Export before fix too */}
+              {/* Export before fix */}
               {!fixResult && (
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => exportReport(question, diagnose, null)}
-                    className="text-xs text-gray-500 hover:text-gray-300 bg-gray-800 hover:bg-gray-700 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5"
-                  >
-                    <span>↓</span> Export Report
+                <div className="animate-fade-in flex justify-end">
+                  <button onClick={() => exportReport(question, diagnose, null)}
+                    className="flex items-center gap-1.5 text-xs text-[#444] hover:text-[#777] transition-colors">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Export diagnosis report
                   </button>
                 </div>
               )}
 
             </div>
           )}
-
-          {/* Footer pitch */}
-          <div className="mt-10 border-t border-gray-800 pt-6 text-center text-gray-600 text-xs">
-            Powered by Claude &middot; In production: Managed Agent + Postgres MCP, triggered from Slack
-          </div>
         </div>
+
+        {/* Footer */}
+        <footer className="fixed bottom-0 inset-x-0 border-t border-[#141414] bg-[#0d0d0d]/90 py-3"
+          style={{ backdropFilter: 'blur(12px)' }}>
+          <p className="text-center text-[10px] text-[#333]">
+            Powered by Claude · Anthropic x Motier Hackathon ·{' '}
+            <span className="text-[#3a3a3a]">In production: Managed Agent + Postgres MCP</span>
+          </p>
+        </footer>
       </main>
     </>
   );
